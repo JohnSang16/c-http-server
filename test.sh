@@ -16,7 +16,10 @@ check "html content type"        "$(curl -s -o /dev/null -w '%{content_type}' $U
 check "css content type"         "$(curl -s -o /dev/null -w '%{content_type}' $URL/style.css)" "text/css"
 check "query string ignored"     "$(code "$URL/style.css?v=2")" 200
 check "missing file is 404"      "$(code $URL/nope.html)" 404
+check "POST /echo returns body"  "$(curl -s -d 'hello world' $URL/echo)" "hello world"
+check "POST elsewhere is 404"    "$(code -d x $URL/other)" 404
 check "DELETE is 405"            "$(code -X DELETE $URL/)" 405
 check "path traversal is 400"    "$(code --path-as-is $URL/../etc/passwd)" 400
 check "garbage request is 400"   "$(printf 'nonsense\r\n\r\n' | nc 127.0.0.1 $PORT | head -1 | tr -d '\r')" "HTTP/1.1 400 Bad Request"
+check "oversized body is 413"    "$(head -c 20000 /dev/zero | tr '\0' a | code --data-binary @- $URL/echo)" 413
 echo "all passed"
