@@ -133,8 +133,12 @@ static int try_handle(struct conn *c) {
             while (*endp == ' ' || *endp == '\t') endp++;
             if (endp == num || *endp || clen < 0) return reject(c, 400, "Bad Request");
         } else if (len > 11 && strncasecmp(p, "Connection:", 11) == 0) {
-            if (memmem(p + 11, len - 11, "close", 5)) keep_alive = 0;
-            else if (memmem(p + 11, len - 11, "keep-alive", 10)) keep_alive = 1;
+            char val[64];  // header values are case-insensitive: ab sends "Keep-Alive"
+            size_t vlen = len - 11 < sizeof val - 1 ? len - 11 : sizeof val - 1;
+            memcpy(val, p + 11, vlen);
+            val[vlen] = '\0';
+            if (strcasestr(val, "close")) keep_alive = 0;
+            else if (strcasestr(val, "keep-alive")) keep_alive = 1;
         }
         p = eol + 2;
     }
