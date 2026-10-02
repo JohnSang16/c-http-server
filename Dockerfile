@@ -1,5 +1,6 @@
 FROM alpine:3.20
-RUN apk add --no-cache build-base
+# Plain-http mirror sidesteps TLS-intercepting proxies (Zscaler); apk still verifies package signatures.
+RUN sed -i 's/https/http/' /etc/apk/repositories && apk add --no-cache build-base
 WORKDIR /app
 COPY . .
 RUN make
