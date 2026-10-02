@@ -3,10 +3,46 @@
 #include <string.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+static const char *root = "public";
+
+static void send_resp(int fd, int status, const char *reason, const char *body, size_t len) {
+    char hdr[256];
+    int n = snprintf(hdr, sizeof hdr,
+                     "HTTP/1.1 %d %s\r\nContent-Type: text/html\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
+                     status, reason, len);
+    write(fd, hdr, n);
+    write(fd, body, len);
+}
+
+static void handle(int fd) {
+    char buf[4096];
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    if (n <= 0) return;
+    buf[n] = '\0';
+
+    char method[16], path[1024];
+    if (sscanf(buf, "%15s %1023s", method, path) != 2) { send_resp(fd, 400, "Bad Request", "bad request", 11); return; }
+    printf("%s %s\n", method, path);
+
+    char full[2048];
+    snprintf(full, sizeof full, "%s%s", root, strcmp(path, "/") == 0 ? "/index.html" : path);
+    FILE *f = fopen(full, "rb");
+    if (!f) { send_resp(fd, 404, "Not Found", "not found", 9); return; }
+    struct stat st;
+    fstat(fileno(f), &st);
+    char *body = malloc(st.st_size);
+    size_t got = fread(body, 1, st.st_size, f);
+    fclose(f);
+    send_resp(fd, 200, "OK", body, got);
+    free(body);
+}
 
 int main(int argc, char **argv) {
     int port = argc > 1 ? atoi(argv[1]) : 8080;
+    if (argc > 2) root = argv[2];
 
     int lfd = socket(AF_INET, SOCK_STREAM, 0);
     if (lfd < 0) { perror("socket"); return 1; }
@@ -22,10 +58,7 @@ int main(int argc, char **argv) {
     for (;;) {
         int cfd = accept(lfd, NULL, NULL);
         if (cfd < 0) continue;
-        char buf[4096];
-        read(cfd, buf, sizeof buf);  // dont care whats in it yet
-        const char *resp = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
-        write(cfd, resp, strlen(resp));
+        handle(cfd);
         close(cfd);
     }
 }
