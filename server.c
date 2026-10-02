@@ -39,7 +39,6 @@ static void handle(int fd) {
 
     char method[16], path[1024];
     if (sscanf(buf, "%15s %1023s", method, path) != 2) { send_resp(fd, 400, "Bad Request", "text/plain", "bad request", 11); return; }
-    printf("%s %s\n", method, path);
 
     char full[2048];
     snprintf(full, sizeof full, "%s%s", root, strcmp(path, "/") == 0 ? "/index.html" : path);
