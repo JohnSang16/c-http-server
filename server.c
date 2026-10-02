@@ -118,9 +118,9 @@ static int try_handle(struct conn *c) {
     if (sscanf(line, "%15s %1023s %15s", method, path, version) != 3 || strncmp(version, "HTTP/1.", 7) != 0)
         return reject(c, 400, "Bad Request");
 
-    // Header lines. Content-Length is the only one we need so far.
+    // Header lines. We only care about two of them.
     long long clen = 0;
-    int keep_alive = 0;  // ponytail: one request per connection for now
+    int keep_alive = strcmp(version, "HTTP/1.1") == 0;  // 1.1 defaults to keep-alive, 1.0 to close
     for (char *p = rl_end + 2; p < hend + 2;) {
         char *eol = memmem(p, hend + 2 - p, "\r\n", 2);
         size_t len = eol - p;
@@ -132,6 +132,9 @@ static int try_handle(struct conn *c) {
             clen = strtoll(num, &endp, 10);
             while (*endp == ' ' || *endp == '\t') endp++;
             if (endp == num || *endp || clen < 0) return reject(c, 400, "Bad Request");
+        } else if (len > 11 && strncasecmp(p, "Connection:", 11) == 0) {
+            if (memmem(p + 11, len - 11, "close", 5)) keep_alive = 0;
+            else if (memmem(p + 11, len - 11, "keep-alive", 10)) keep_alive = 1;
         }
         p = eol + 2;
     }
@@ -187,6 +190,7 @@ static void flush(struct conn *c) {
         free(c->out);
         c->out = NULL;
         if (c->close_after) { close_conn(c); return; }
+        try_handle(c);  // a pipelined request may already be sitting in the buffer
     }
     set_events(c, EPOLLIN);
 }
