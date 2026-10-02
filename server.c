@@ -205,15 +205,6 @@ int main(int argc, char **argv) {
     printf("listening on :%d, serving %s/\n", port, root);
     fflush(stdout);
 
-    /* old blocking loop, keeping for now
-    for (;;) {
-        int cfd = accept(lfd, NULL, NULL);
-        if (cfd < 0) continue;
-        handle(cfd);
-        close(cfd);
-    }
-    */
-
     struct epoll_event events[MAX_EVENTS];
     for (;;) {
         int n = epoll_wait(epfd, events, MAX_EVENTS, -1);
