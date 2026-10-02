@@ -136,10 +136,25 @@ static void close_conn(struct conn *c) {
     free(c);
 }
 
+static void set_events(struct conn *c, uint32_t events) {
+    struct epoll_event ev = {.events = events, .data.ptr = c};
+    epoll_ctl(epfd, EPOLL_CTL_MOD, c->fd, &ev);
+}
+
 static void flush(struct conn *c) {
-    // TODO partial writes
-    write(c->fd, c->out, c->outlen);
-    close_conn(c);
+    while (c->out) {
+        while (c->outsent < c->outlen) {
+            ssize_t n = write(c->fd, c->out + c->outsent, c->outlen - c->outsent);
+            if (n < 0 && errno == EINTR) continue;
+            if (n < 0 && errno == EAGAIN) { set_events(c, EPOLLOUT); return; }  // send buffer full, wait till writable
+            if (n < 0) { close_conn(c); return; }
+            c->outsent += n;
+        }
+        free(c->out);
+        c->out = NULL;
+        if (c->close_after) { close_conn(c); return; }
+    }
+    set_events(c, EPOLLIN);
 }
 
 static void on_readable(struct conn *c) {
