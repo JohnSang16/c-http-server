@@ -1,13 +1,34 @@
+// tiny http/1.1 server, one thread + epoll
+// linux only (mac doesnt have epoll) so run it through docker
+#define _GNU_SOURCE
+#include <errno.h>
+#include <netinet/in.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <netinet/in.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#define MAX_REQ 16384  // per conn buffer, anything bigger gets a 413
+#define MAX_EVENTS 128
+
+struct conn {
+    int fd;
+    char in[MAX_REQ];  // could be half a request or a couple pipelined ones
+    size_t inlen;
+    char *out;         // NULL when theres nothing to send
+    size_t outlen, outsent;
+    int close_after;
+};
+
 static const char *root = "public";
+static int epfd;
+
+static void die(const char *msg) { perror(msg); exit(1); }
 
 static const char *mime_type(const char *path) {
     static const char *map[][2] = {
@@ -22,56 +43,175 @@ static const char *mime_type(const char *path) {
     return "application/octet-stream";
 }
 
-static void send_resp(int fd, int status, const char *reason, const char *ctype, const char *body, size_t len) {
-    char hdr[256];
+// builds the whole response into c->out, flush() is what sends it
+static void queue_response(struct conn *c, int status, const char *reason, const char *ctype,
+                           const char *body, size_t bodylen, int keep_alive) {
+    char hdr[512];
     int n = snprintf(hdr, sizeof hdr,
-                     "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
-                     status, reason, ctype, len);
-    write(fd, hdr, n);
-    write(fd, body, len);
+                     "HTTP/1.1 %d %s\r\n"
+                     "Content-Type: %s\r\n"
+                     "Content-Length: %zu\r\n"
+                     "Connection: %s\r\n"
+                     "\r\n",
+                     status, reason, ctype, bodylen, keep_alive ? "keep-alive" : "close");
+    if (!(c->out = malloc(n + bodylen))) die("malloc");
+    memcpy(c->out, hdr, n);
+    memcpy(c->out + n, body, bodylen);
+    c->outlen = n + bodylen;
+    c->outsent = 0;
+    c->close_after = !keep_alive;
 }
 
-static void handle(int fd) {
-    char buf[4096];
-    ssize_t n = read(fd, buf, sizeof buf - 1);
-    if (n <= 0) return;
-    buf[n] = '\0';
+static void send_error(struct conn *c, int status, const char *reason, int keep_alive) {
+    queue_response(c, status, reason, "text/plain; charset=utf-8", reason, strlen(reason), keep_alive);
+}
 
-    char method[16], path[1024];
-    if (sscanf(buf, "%15s %1023s", method, path) != 2) { send_resp(fd, 400, "Bad Request", "text/plain", "bad request", 11); return; }
+// malformed request, cant trust where it ends so reply and close
+static int reject(struct conn *c, int status, const char *reason) {
+    send_error(c, status, reason, 0);
+    c->inlen = 0;
+    return 1;
+}
+
+static void serve_file(struct conn *c, const char *path, int keep_alive) {
+    if (path[0] != '/') { reject(c, 400, "Bad Request"); return; }
 
     char full[2048];
-    snprintf(full, sizeof full, "%s%s", root, strcmp(path, "/") == 0 ? "/index.html" : path);
-    FILE *f = fopen(full, "rb");
-    if (!f) { send_resp(fd, 404, "Not Found", "text/plain", "not found", 9); return; }
+    snprintf(full, sizeof full, "%s%s%s", root, path, path[strlen(path) - 1] == '/' ? "index.html" : "");
+
     struct stat st;
-    fstat(fileno(f), &st);
-    char *body = malloc(st.st_size);
-    size_t got = fread(body, 1, st.st_size, f);
+    FILE *f;
+    if (stat(full, &st) < 0 || !S_ISREG(st.st_mode) || !(f = fopen(full, "rb"))) {
+        send_error(c, 404, "Not Found", keep_alive);
+        return;
+    }
+    // whole file into memory. fine for small stuff, sendfile() if it ever matters
+    char *body = malloc(st.st_size ? st.st_size : 1);
+    if (!body) die("malloc");
+    size_t n = fread(body, 1, st.st_size, f);
     fclose(f);
-    send_resp(fd, 200, "OK", mime_type(full), body, got);
+    queue_response(c, 200, "OK", mime_type(full), body, n, keep_alive);
     free(body);
+}
+
+// returns 1 if a response got queued, 0 if we need more bytes
+static int try_handle(struct conn *c) {
+    // no blank line yet = headers arent done
+    char *hend = memmem(c->in, c->inlen, "\r\n\r\n", 4);
+    if (!hend) return c->inlen == MAX_REQ ? reject(c, 431, "Request Header Fields Too Large") : 0;
+    size_t hdr_len = hend - c->in + 4;
+
+    // request line, ex "GET /index.html HTTP/1.1"
+    char *rl_end = memmem(c->in, hdr_len, "\r\n", 2);
+    size_t rl_len = rl_end - c->in;
+    char line[1100], method[16], path[1024], version[16];
+    if (rl_len >= sizeof line) return reject(c, 414, "URI Too Long");
+    memcpy(line, c->in, rl_len);
+    line[rl_len] = '\0';
+    if (sscanf(line, "%15s %1023s %15s", method, path, version) != 3 || strncmp(version, "HTTP/1.", 7) != 0)
+        return reject(c, 400, "Bad Request");
+
+    int keep_alive = 0;  // TODO keep-alive
+
+    char *query = strchr(path, '?');
+    if (query) *query = '\0';
+
+    if (strcmp(method, "GET") == 0)
+        serve_file(c, path, keep_alive);
+    else
+        send_error(c, 405, "Method Not Allowed", keep_alive);
+
+    // shift the leftovers down, might be the next pipelined request
+    size_t used = hdr_len;
+    if (c->inlen) {  // reject() already cleared it
+        memmove(c->in, c->in + used, c->inlen - used);
+        c->inlen -= used;
+    }
+    return 1;
+}
+
+static void close_conn(struct conn *c) {
+    close(c->fd);  // also drops it from epoll
+    free(c->out);
+    free(c);
+}
+
+static void flush(struct conn *c) {
+    // TODO partial writes
+    write(c->fd, c->out, c->outlen);
+    close_conn(c);
+}
+
+static void on_readable(struct conn *c) {
+    int eof = 0;
+    while (c->inlen < MAX_REQ) {
+        ssize_t n = read(c->fd, c->in + c->inlen, MAX_REQ - c->inlen);
+        if (n > 0) { c->inlen += n; continue; }
+        if (n == 0) { eof = 1; break; }  // client is done sending but might still want the reply
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN) break;
+        close_conn(c);
+        return;
+    }
+    if (try_handle(c)) {
+        if (eof) c->close_after = 1;
+        flush(c);
+    } else if (eof) {
+        close_conn(c);
+    }
+}
+
+static void accept_all(int lfd) {
+    // TODO if we run out of fds this spins forever. fine for now
+    for (;;) {
+        int fd = accept4(lfd, NULL, NULL, SOCK_NONBLOCK);
+        if (fd < 0) return;
+        struct conn *c = calloc(1, sizeof *c);
+        if (!c) { close(fd); continue; }
+        c->fd = fd;
+        struct epoll_event ev = {.events = EPOLLIN, .data.ptr = c};
+        epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+    }
 }
 
 int main(int argc, char **argv) {
     int port = argc > 1 ? atoi(argv[1]) : 8080;
     if (argc > 2) root = argv[2];
 
-    int lfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (lfd < 0) { perror("socket"); return 1; }
+    int lfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (lfd < 0) die("socket");
+    struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_ANY)};
+    if (bind(lfd, (struct sockaddr *)&addr, sizeof addr) < 0) die("bind");
+    if (listen(lfd, SOMAXCONN) < 0) die("listen");
 
-    struct sockaddr_in addr = {0};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(lfd, (struct sockaddr *)&addr, sizeof addr) < 0) { perror("bind"); return 1; }
-    if (listen(lfd, 16) < 0) { perror("listen"); return 1; }
-    printf("listening on %d\n", port);
+    if ((epfd = epoll_create1(0)) < 0) die("epoll_create1");
+    struct epoll_event ev = {.events = EPOLLIN, .data.ptr = NULL};  // NULL = listening socket
+    epoll_ctl(epfd, EPOLL_CTL_ADD, lfd, &ev);
+    printf("listening on :%d, serving %s/\n", port, root);
+    fflush(stdout);
 
+    /* old blocking loop, keeping for now
     for (;;) {
         int cfd = accept(lfd, NULL, NULL);
         if (cfd < 0) continue;
         handle(cfd);
         close(cfd);
+    }
+    */
+
+    struct epoll_event events[MAX_EVENTS];
+    for (;;) {
+        int n = epoll_wait(epfd, events, MAX_EVENTS, -1);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            die("epoll_wait");
+        }
+        for (int i = 0; i < n; i++) {
+            struct conn *c = events[i].data.ptr;
+            if (!c) accept_all(lfd);
+            else if (events[i].events & (EPOLLERR | EPOLLHUP)) close_conn(c);
+            else if (events[i].events & EPOLLIN) on_readable(c);
+            else if (events[i].events & EPOLLOUT) flush(c);
+        }
     }
 }
