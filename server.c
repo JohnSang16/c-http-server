@@ -216,6 +216,7 @@ static void accept_all(int lfd) {
 int main(int argc, char **argv) {
     int port = argc > 1 ? atoi(argv[1]) : 8080;
     if (argc > 2) root = argv[2];
+    signal(SIGPIPE, SIG_IGN);  // otherwise a client hanging up mid write kills the whole server
 
     int lfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (lfd < 0) die("socket");
