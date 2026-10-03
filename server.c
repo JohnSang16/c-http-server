@@ -112,18 +112,41 @@ static int try_handle(struct conn *c) {
     if (sscanf(line, "%15s %1023s %15s", method, path, version) != 3 || strncmp(version, "HTTP/1.", 7) != 0)
         return reject(c, 400, "Bad Request");
 
+    long long clen = 0;
     int keep_alive = 0;  // TODO keep-alive
+    for (char *p = rl_end + 2; p < hend + 2;) {
+        char *eol = memmem(p, hend + 2 - p, "\r\n", 2);
+        size_t len = eol - p;
+        if (len > 15 && strncasecmp(p, "Content-Length:", 15) == 0) {
+            char num[32], *endp;
+            size_t nlen = len - 15 < sizeof num - 1 ? len - 15 : sizeof num - 1;
+            memcpy(num, p + 15, nlen);
+            num[nlen] = '\0';
+            clen = strtoll(num, &endp, 10);
+            while (*endp == ' ' || *endp == '\t') endp++;
+            if (endp == num || *endp || clen < 0) return reject(c, 400, "Bad Request");
+        }
+        p = eol + 2;
+    }
+
+    if (hdr_len + clen > MAX_REQ) return reject(c, 413, "Content Too Large");
+    if (c->inlen < hdr_len + clen) return 0;  // body still coming in
+    const char *body = c->in + hdr_len;
 
     char *query = strchr(path, '?');
     if (query) *query = '\0';
 
     if (strcmp(method, "GET") == 0)
         serve_file(c, path, keep_alive);
+    else if (strcmp(method, "POST") == 0 && strcmp(path, "/echo") == 0)
+        queue_response(c, 200, "OK", "text/plain; charset=utf-8", body, clen, keep_alive);
+    else if (strcmp(method, "POST") == 0)
+        send_error(c, 404, "Not Found", keep_alive);
     else
         send_error(c, 405, "Method Not Allowed", keep_alive);
 
     // shift the leftovers down, might be the next pipelined request
-    size_t used = hdr_len;
+    size_t used = hdr_len + clen;
     if (c->inlen) {  // reject() already cleared it
         memmove(c->in, c->in + used, c->inlen - used);
         c->inlen -= used;
