@@ -195,6 +195,8 @@ int main(int argc, char **argv) {
 
     int lfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (lfd < 0) die("socket");
+    int one = 1;
+    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);  // so restarting doesnt fail with address in use
     struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_ANY)};
     if (bind(lfd, (struct sockaddr *)&addr, sizeof addr) < 0) die("bind");
     if (listen(lfd, SOMAXCONN) < 0) die("listen");
