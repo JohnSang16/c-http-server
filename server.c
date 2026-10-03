@@ -113,7 +113,7 @@ static int try_handle(struct conn *c) {
         return reject(c, 400, "Bad Request");
 
     long long clen = 0;
-    int keep_alive = 0;  // TODO keep-alive
+    int keep_alive = strcmp(version, "HTTP/1.1") == 0;  // 1.0 closes by default
     for (char *p = rl_end + 2; p < hend + 2;) {
         char *eol = memmem(p, hend + 2 - p, "\r\n", 2);
         size_t len = eol - p;
@@ -125,6 +125,9 @@ static int try_handle(struct conn *c) {
             clen = strtoll(num, &endp, 10);
             while (*endp == ' ' || *endp == '\t') endp++;
             if (endp == num || *endp || clen < 0) return reject(c, 400, "Bad Request");
+        } else if (len > 11 && strncasecmp(p, "Connection:", 11) == 0) {
+            if (memmem(p + 11, len - 11, "close", 5)) keep_alive = 0;
+            else if (memmem(p + 11, len - 11, "keep-alive", 10)) keep_alive = 1;
         }
         p = eol + 2;
     }
@@ -177,6 +180,7 @@ static void flush(struct conn *c) {
         free(c->out);
         c->out = NULL;
         if (c->close_after) { close_conn(c); return; }
+        try_handle(c);  // next request might already be buffered
     }
     set_events(c, EPOLLIN);
 }
