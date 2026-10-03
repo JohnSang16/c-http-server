@@ -1,6 +1,6 @@
 FROM alpine:3.20
 # zscaler breaks https here. apk still checks package signatures so http is fine
-RUN sed -i 's/https/http/' /etc/apk/repositories && apk add --no-cache build-base
+RUN sed -i 's/https/http/' /etc/apk/repositories && apk add --no-cache build-base curl
 WORKDIR /app
 COPY . .
 RUN make
