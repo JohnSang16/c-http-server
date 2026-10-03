@@ -23,4 +23,5 @@ check "traversal 400"         "$(code --path-as-is $URL/../etc/passwd)" 400
 check "garbage 400"           "$(printf 'nonsense\r\n\r\n' | nc 127.0.0.1 $PORT | head -1 | tr -d '\r')" "HTTP/1.1 400 Bad Request"
 check "oversized 413"         "$(head -c 20000 /dev/zero | tr '\0' a | code --data-binary @- $URL/echo)" 413
 check "keep-alive reuses socket" "$(curl -s -o /dev/null -o /dev/null -w '%{num_connects}' $URL/ $URL/style.css)" 10
+check "http/1.0 keep-alive"   "$(printf 'GET / HTTP/1.0\r\nConnection: Keep-Alive\r\n\r\n' | nc -w 1 127.0.0.1 $PORT | grep -i '^connection' | tr -d '\r')" "Connection: keep-alive"
 echo "all passed"
