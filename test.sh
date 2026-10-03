@@ -17,5 +17,6 @@ check "css content type"      "$(curl -s -o /dev/null -w '%{content_type}' $URL/
 check "query string"          "$(code "$URL/style.css?v=2")" 200
 check "404"                   "$(code $URL/nope.html)" 404
 check "delete 405"            "$(code -X DELETE $URL/)" 405
+check "traversal 400"         "$(code --path-as-is $URL/../etc/passwd)" 400
 check "garbage 400"           "$(printf 'nonsense\r\n\r\n' | nc 127.0.0.1 $PORT | head -1 | tr -d '\r')" "HTTP/1.1 400 Bad Request"
 echo "all passed"

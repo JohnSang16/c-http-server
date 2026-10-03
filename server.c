@@ -74,7 +74,8 @@ static int reject(struct conn *c, int status, const char *reason) {
 }
 
 static void serve_file(struct conn *c, const char *path, int keep_alive) {
-    if (path[0] != '/') { reject(c, 400, "Bad Request"); return; }
+    // TODO this also blocks names like a..b, realpath() + prefix check would be better
+    if (path[0] != '/' || strstr(path, "..")) { reject(c, 400, "Bad Request"); return; }
 
     char full[2048];
     snprintf(full, sizeof full, "%s%s%s", root, path, path[strlen(path) - 1] == '/' ? "index.html" : "");
