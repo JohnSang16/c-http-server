@@ -22,7 +22,7 @@ has to go through docker since mac doesnt have epoll. got ~177k req/s with `ab -
 
 ## how it works
 
-easiest to read server.c from the bottom up.
+easiest to read server.c from bottom up.
 
 main sets up a non blocking listening socket (socket, bind, listen). non blocking means accept/read/write return EAGAIN right away instead of waiting.
 
